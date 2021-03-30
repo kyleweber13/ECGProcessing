@@ -52,9 +52,10 @@ class SmitalProcessing:
         # wavelet transformations
         """INITIAL WAVELET IS GOOD"""
         u = pywt.swt(data=self.signal, wavelet='db4', axis=0, level=4, norm=True)  # noise-free signal coefficients
-        # u = pywt.threshold(data=u, mode='garrote', value=(np.median(u) / .6745) ** 2)
-        # u = [u[i][0] for i in range(len(u))]  # Gets wavelet coefficients (ignores approx. coeffs)
 
+        # Applies non-negative Garrote thresholding method to each set of coefficients
+        # Method from Smital et al. 2013
+        """NOT COMPLETE"""
         u_final = []
         for band in range(len(u)):
             t1 = pywt.threshold(data=u[band][0], mode='garrote', value=(np.median(u[band][0]) / .6745) ** 2)
@@ -119,17 +120,17 @@ class SmitalProcessing:
 
         # Calculates SNR every 2 seconds
         for window in range(0, len(self.signal), int(self.fs * 2)):
-            sig = [i ** 2 for i in self.sig_est[window:int(window + self.fs * 2)]]
+            sig = [i ** 2 for i in self.signal[window:int(window + self.fs * 2)]]
             noise = [i ** 2 for i in self.noise_est[window:int(window + self.fs * 2)]]
 
             val = 10 * math.log10(sum(sig) / sum(noise))
             stnr.append(val)
 
         # lowpass filters STNR data
-        snrt_final = Filtering.filter_signal(data=stnr, sample_f=.5, filter_type='lowpass', low_f=.05, filter_order=3)
+        stnr_final = Filtering.filter_signal(data=stnr, sample_f=.5, filter_type='lowpass', low_f=.05, filter_order=3)
         print("Complete.")
 
-        return snrt_final
+        return stnr_final
 
     def plot_data(self):
 
@@ -162,6 +163,5 @@ class SmitalProcessing:
         axes[0].set_ylabel("Voltage")
 
 
-ecg = SmitalProcessing("/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/"
-                       "Converted/Collection 1/3LeadRun1.edf")
+ecg = SmitalProcessing("/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 1/3LeadRun1.edf")
 ecg.plot_data()
