@@ -1,269 +1,122 @@
+import ImportEDF
+import nwecg.nwecg.awwf as wiener_filter
+import nwecg.nwecg.ecg_quality as qc
 import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
-import os
-import neurokit2 as nk
-import scipy.fft
 import Filtering
-import PIL
-
-fs = 1000
-
-
-def calc_descriptive(annotations, signal, folder, subfolder):
-    """Function that calculates descriptive statistics and runs cumulative FFT on raw and Wiener-filtered data
-       for each section of specified data.
-
-       :argument
-       -annotations: dataframe of signal quality annotations.
-       -signal: array of ECG signal
-       -folder: pathway to subject's folder
-       -subfolder: name of subject's specific collection folder that contains relevant files
-    """
-
-    # Empty data to be populated
-    range_list_f = []  # voltage range of Wiener-filtered data
-    sd_list_f = []  # voltage SD of Wiener-filtered data
-
-    range_list = []  # voltage range of raw data (.25Hz highpass filtered)
-    sd_list = []  # voltage SD of raw data (.25Hz highpass filtered)
-
-    # Cumulative FFT dataframe for raw data
-    df_fft_raw = pd.DataFrame([[], [], [], [], []]).transpose()
-    df_fft_raw.columns = ["Percent", "Freq", "ID", "category", "event"]
-
-    # Cumulative FFT dataframe for Wiener-filtered data
-    df_fft_w = pd.DataFrame([[], [], [], [], []]).transpose()
-    df_fft_w.columns = ["Percent", "Freq", "ID", "category", "event"]
-
-    # Loops through each flagged data segment
-    for row in annotations.itertuples():
-        d = signal.iloc[int(row.start_idx):int(row.end_idx)]  # Subsection of data
-
-        # Only includes segments of data at least 5-seconds long
-        if d.shape[0] >= (fs*5):
-
-            # Wiener filtered
-            desc = d["signal_AWWF"].describe()
-            range_list_f.append(desc["max"] - desc['min'])
-            sd_list_f.append(desc["std"])
-
-            del desc
-
-            # Highpass filtered to remove baseline wander
-            desc = pd.Series(Filtering.filter_signal(data=d["signal_raw"], sample_f=fs, high_f=.25,
-                                                     filter_order=3, filter_type='highpass')).describe()
-            range_list.append(desc["max"] - desc['min'])
-            sd_list.append(desc["std"])
-
-            """Cumulative FFT data: calculates frequencies that account for np.arange(10, 101, 10)% of signal power"""
-            # FFT data: raw (.25Hz highpass)
-            raw, cs_raw = cumulative_fft(signal=Filtering.filter_signal(data=d["signal_raw"],
-                                                                        sample_f=fs, high_f=.25,
-                                                                        filter_order=3,
-                                                                        filter_type='highpass'))
-
-            cs_raw["ID"] = [f"{folder}_{subfolder}" for i in range(cs_raw.shape[0])]
-            cs_raw["category"] = [row.quality for i in range(cs_raw.shape[0])]
-            cs_raw["event"] = [row.Index + 1 for i in range(cs_raw.shape[0])]
-
-            df_fft_raw = df_fft_raw.append(cs_raw)
-
-            # FFT data: Wiener filtered data
-            w, cs_w = cumulative_fft(signal=d["signal_AWWF"])
-            cs_w["ID"] = [f"{folder}_{subfolder}" for i in range(cs_w.shape[0])]
-            cs_w["category"] = [row.quality for i in range(cs_w.shape[0])]
-            cs_w["event"] = [row.Index + 1 for i in range(cs_w.shape[0])]
-
-            df_fft_w = df_fft_w.append(cs_w)
-
-        if d.shape[0] < (fs*5):
-            range_list_f.append(None)
-            sd_list_f.append(None)
-            range_list.append(None)
-            sd_list.append(None)
-
-    # Adds columns with descriptive stats to annotations df
-    annotations["range_AWWF"] = range_list_f
-    annotations['sd_AWWF'] = sd_list_f
-    annotations["range_raw"] = range_list
-    annotations['sd_raw'] = sd_list
-
-    return df_fft_raw, df_fft_w
+import numpy as np
+import pandas as pd
 
 
-def cumulative_fft(signal):
-    """Runs FFT on given signal and calculates the frequencies that account for np.arange(10, 101, 10)% of the
-       signal power.
+def create_filt_snr_df():
 
-        :argument
-        -signal: array of ECG signal
+    cats = []
+    for a in snr_filt:
+        if a < thresh[0]:
+            cats.append("Q3")
+        if thresh[0] <= a < thresh[1]:
+            cats.append("Q2")
+        if a >= thresh[1]:
+            cats.append("Q1")
 
-        :returns
-        -df_fft: df for all calculated frequencies
-        -df_cs: df of only 10%-interval data
-    """
+    inds = []
+    for i in range(len(cats) - 1):
+        if cats[i] != cats[i + 1]:
+            inds.append(i + 1)
 
-    length = len(signal)
-    fft = scipy.fft.fft([i for i in signal])
+    if len(inds) % 2 == 1:
+        inds.append(len(snr_filt))
 
-    xf = np.linspace(0.0, 1.0 / (2.0 * (1 / fs)), length // 2)
+    df_filt_annots = pd.DataFrame([inds[::2], inds[1::2], [cats[i] for i in inds[::2]]]).transpose()
+    df_filt_annots.columns = ["start_idx", "end_idx", "quality"]
 
-    df_fft = pd.DataFrame(list(zip(xf, 2.0 / length / 2 * np.abs(fft[0:length // 2]))), columns=["Freq", "Power"])
+    rows = []
+    for i in range(df_filt_annots.shape[0] - 1):
+        end = df_filt_annots.iloc[i]["end_idx"]
+        start = df_filt_annots.iloc[i + 1]["start_idx"]
+        cat = cats[int(end)]
 
-    # Removes rows of data below .25Hz (DC component)
-    df_fft = df_fft.loc[df_fft["Freq"] >= .25]
+        rows.append([end, start, cat])
 
-    # Calculates cumulative % below value for each row
-    df_fft["CSum"] = 100 * df_fft["Power"].cumsum() / sum(df_fft["Power"])
+    rows.append([rows[-1][1], len(snr_filt), cats[-1]])
 
-    # Finds frequencies at eat 10%-interval
-    percent = 10
-    freqs = []
-    for row in df_fft.itertuples():
-        if row.CSum >= percent:
-            freqs.append(row.Freq)
-            percent += 10
+    df_append = pd.DataFrame(rows, columns=df_filt_annots.columns)
 
-            if percent > 100:
-                break
+    df_all = pd.concat([df_filt_annots, df_append], ignore_index=True)
+    df_all = df_all.sort_values("start_idx")
+    df_all = df_all.reset_index()
+    df_all = df_all[["start_idx", "end_idx", "quality"]]
 
-    df_cs = pd.DataFrame(list(zip(np.arange(10, 101, 10), freqs)), columns=["Percent", "Freq"])
-
-    return df_fft, df_cs
-
-
-def write_files_loop(root_folder="/Users/kyleweber/Desktop/Smital_ECG_Validation/",
-                     fft_write_dir="/Users/kyleweber/Desktop/ECG_FFT/",
-                     descriptive_write_dir="/Users/kyleweber/Desktop/ECG_Validation_Descriptive/"):
-    """Loops through all files in all folders in root_folder. Runs cumulative FFT (cumulative_fft()) for each dataset
-       using annotations from the manually-detected signal quality (annotations_manual.csv). Adds subject ID to
-       manual annotations df and overwrites original file (used if combining all data into one df)
-
-    :argument
-    -root_folder: pathway to folder that contains all data
-    -fft_write_dir: pathway to where FFT data is written
-    -descriptive_write_dir: pathway to where descriptive data (range, SD) is written
-    """
-
-    ids = os.listdir(root_folder)
-
-    for folder in ids:
-
-        if folder != ".DS_Store":
-
-            sub_f = os.listdir(root_folder + folder)
-
-            for subfolder in sub_f:
-                if subfolder != ".DS_Store":  # stupid Macs
-
-                    print(folder, subfolder)
-
-                    manual = pd.read_csv(f"{root_folder}/{folder}/{subfolder}/annotations_manual.csv")
-                    s = pd.read_csv(f"{root_folder}/{folder}/{subfolder}/signal.csv")
-
-                    df_fft_raw, df_fft_w = calc_descriptive(annotations=manual, signal=s,
-                                                            folder=folder, subfolder=subfolder)
-                    df_fft_raw.to_csv(f"{fft_write_dir}{folder}_{subfolder}_Raw.csv", index=False)
-                    df_fft_w.to_csv(f"{fft_write_dir}{folder}_{subfolder}_AWWF.csv", index=False)
-
-                    manual["ID"] = [f"{folder}_{subfolder}" for i in range(manual.shape[0])]
-
-                    manual.to_csv(f'{descriptive_write_dir}{folder}_{subfolder}.csv',
-                                  index=False)
-
-
-def combine_files(folder="/Users/kyleweber/Desktop/ECG_Validation_Descriptive/", remove_unknown=True):
-
-    df = pd.DataFrame([[], [], [], [],[], [], [], []]).transpose()
-    df.columns = ['start_idx', 'end_idx', 'quality', 'range_AWWF', 'sd_AWWF', "range_raw", "sd_raw", 'ID']
-
-    for file in os.listdir(folder):
-        print(f"Reading {file}...")
-        d = pd.read_csv(f"{folder}/{file}")
-
-        df = df.append(d)
-
-    if remove_unknown:
-        df = df.loc[df["quality"] != "UNKNOWN"]
-
-    return df
-
-
-def import_fft_data(folder):
-
-    files = [i for i in os.listdir(folder) if "csv" in i]
-
-    df_all = pd.DataFrame([[], [], [], [], [], []]).transpose()
-    df_all.columns = ["Percent", "Freq", "ID", "category", "event", "data"]
-
-    for file in files:
-        print(file)
-
-        df = pd.read_csv(folder + file)
-
-        data_type = "raw" if "Raw" in file else "AWWF"
-        df["data"] = [data_type for i in range(df.shape[0])]
-
-        df_all = df_all.append(df)
-
+    df_all['duration'] = [(row.end_idx - row.start_idx) / data.sample_rate for row in df_all.itertuples()]
     return df_all
 
 
-def gen_fft_heatmap(df, save_fig=False, save_dir="/Users/kyleweber/Desktop"):
-    """Generates a hexbin/heatmap of the cumulative FFT data sorted by raw/wiener-filtered and signal quality category.
+def plot_data(ds_ratio=3):
 
-    :argument
-    -df: dataframe from import_fft_data()
-    -save_fig: boolean; will save as 200dpi tiff file
-    -save_dir: pathway to where tiff will be saved
-    """
+    fig, axes = plt.subplots(2, sharex='col', figsize=(11, 7))
 
-    fig, axes = plt.subplots(2, 3, sharey='row', sharex='col', figsize=(11, 7))
-    axes[0][0].set_ylabel("Percent")
-    axes[1][0].set_ylabel("Percent")
-    axes[1][0].set_xlabel("Freq")
-    axes[1][1].set_xlabel("Freq")
-    axes[1][2].set_xlabel("Freq")
+    axes[0].plot(data.timestamps[::ds_ratio], wiener_filt[::ds_ratio], color='black')
+    axes[0].set_title("Wiener filtered")
 
-    axes[0][0].set_title(".25Hz HP Q1")
-    axes[0][1].set_title(".25Hz HP Q2")
-    axes[0][2].set_title(".25Hz HP Q3")
+    axes[1].plot(data.timestamps[::ds_ratio], snr[::ds_ratio], color='black', label="Raw SNR")
+    axes[1].plot(data.timestamps[::ds_ratio], snr_filt[::ds_ratio], color='red', label="LP SNR")
+    axes[1].legend()
+    axes[1].set_ylabel("SNR (dB)")
 
-    axes[1][0].set_title("Wiener Q1")
-    axes[1][1].set_title("Wiener Q2")
-    axes[1][2].set_title("Wiener Q3")
+    c = {"UNKNOWN": "grey", "Q1": 'green', "Q2": "dodgerblue", "Q3": 'red'}
 
-    d = df.loc[(df["data"]=="raw") & (df["category"]=="Q1")]
-    axes[0][0].hexbin(d["Freq"], d["Percent"], cmap='nipy_spectral')
+    min_snr = min(snr)
+    max_snr = max(snr)
+    r = (max_snr - min_snr) / 2
 
-    d = df.loc[(df["data"]=="raw") & (df["category"]=="Q2")]
-    axes[0][1].hexbin(d["Freq"], d["Percent"], cmap="nipy_spectral")
+    for row in annots._annotations.itertuples():
+        axes[1].fill_between(x=[data.timestamps[row.start_idx],
+                                data.timestamps[row.end_idx-1] if len(data.timestamps) - 1 >= row.end_idx else
+                                data.timestamps[-1]],
+                             y1=(r + min_snr) * 1.01, y2=max_snr, color=c[row.quality], alpha=.35)
 
-    d = df.loc[(df["data"]=="raw") & (df["category"]=="Q3")]
-    axes[0][2].hexbin(d["Freq"], d["Percent"], cmap="nipy_spectral")
+    for row in df_all.itertuples():
+        try:
+            axes[1].fill_between(x=[data.timestamps[row.start_idx],
+                                    data.timestamps[row.end_idx-1] if len(data.timestamps) - 1 >= row.end_idx else
+                                    data.timestamps[-1]],
+                                 y1=min_snr, y2=(max_snr - r) * .99, color=c[row.quality], alpha=.35)
+        except IndexError:
+            pass
 
-    d = df.loc[(df["data"]=="AWWF") & (df["category"]=="Q1")]
-    axes[1][0].hexbin(d["Freq"], d["Percent"], cmap="nipy_spectral")
-
-    d = df.loc[(df["data"]=="AWWF") & (df["category"]=="Q2")]
-    axes[1][1].hexbin(d["Freq"], d["Percent"], cmap="nipy_spectral")
-
-    d = df.loc[(df["data"]=="AWWF") & (df["category"]=="Q3")]
-    axes[1][2].hexbin(d["Freq"], d["Percent"], cmap="nipy_spectral")
-
-    axes[0][0].set_xlim(0, 100)
-    axes[0][1].set_xlim(0, 100)
-    axes[0][2].set_xlim(0, 100)
-    axes[1][0].set_xlim(0, 100)
-    axes[1][1].set_xlim(0, 100)
-    axes[1][2].set_xlim(0, 100)
-
-    if save_fig:
-        plt.savefig(f"{save_dir}CumulativeFFT.tiff", dpi=200)
+    for t in thresh:
+        axes[1].axhline(t, color='orange')
 
 
-# write_files_loop()
-# desc = combine_files(remove_unknown=True)
-# df_all_fft = import_fft_data(df=folder="/Users/kyleweber/Desktop/ECG_FFT/")
-# gen_fft_heatmap(df=df_all_fft, save_fig=False)
+def replace_unusable_data(ecg_signal, annotations_df, value=None):
+
+    df_bad = annotations_df.loc[annotations_df["quality"] == "Q3"]
+
+    ecg = np.array(ecg_signal)
+
+    for row in df_bad.itertuples():
+        ecg[int(row.start_idx):int(row.end_idx)] = value
+
+    return ecg
+
+
+data = ImportEDF.Bittium(filepath="/Users/kyleweber/Desktop/007_OmegaSnap.EDF",
+                         start_offset=0, end_offset=0, epoch_len=15, load_accel=False,
+                         low_f=1, high_f=25, f_type="bandpass")
+f = Filtering.filter_signal(data=data.raw, filter_type='bandpass', low_f=.5, high_f=30,
+                            filter_order=3, sample_f=data.sample_rate)
+
+# No bandpass/notch filtering
+w = wiener_filter.awwf(f, data.sample_rate)
+
+filt, wiener_filt, snr, annots, thresh = qc.annotate_ecg_quality(sample_rate=data.sample_rate, signal=data.raw)
+annots._annotations["quality"] = [row.quality.value for row in annots._annotations.itertuples()]
+df_annots = annots._annotations.copy()
+
+# .05Hz lowpass filter on SNR data
+snr_filt = Filtering.filter_signal(data=snr, filter_type='lowpass', low_f=.05, sample_f=data.sample_rate)
+snr_filt = np.array(snr_filt)
+
+df_all = create_filt_snr_df()
+# ecg_edit = replace_unusable_data(ecg_signal=wiener_filt, annotations_df=df_all)
+
+# plot_data(ds_ratio=10)

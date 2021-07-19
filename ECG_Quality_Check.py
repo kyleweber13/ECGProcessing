@@ -1,4 +1,4 @@
-from ecgdetectors import Detectors
+from ecgdetectors.ecgdetectors import Detectors
 # https://github.com/luishowell/ecg-detectors
 
 from matplotlib import pyplot as plt
@@ -35,7 +35,7 @@ class CheckQuality:
         self.start_index = start_index
         self.template_data = template_data
 
-        self.raw_data = [i for i in raw_data[self.start_index:self.start_index+self.epoch_len*self.fs]]
+        self.raw_data = [i for i in raw_data[self.start_index:self.start_index+int(self.epoch_len*self.fs)]]
         self.wavelet = None
         self.filt_squared = None
 
@@ -116,6 +116,7 @@ class CheckQuality:
         # Runs peak detection on raw data ----------------------------------------------------------------------------
         # Uses ecgdetectors package -> stationary wavelet transformation + Pan-Tompkins peak detection algorithm
         self.r_peaks, swt, squared = detectors.swt_detector(unfiltered_ecg=self.raw_data)
+        self.r_peaks = [i for i in self.r_peaks]
 
         # Checks to see if there are enough potential peaks to correspond to correct HR range ------------------------
         # Requires number of beats in window that corresponds to ~40 bpm to continue
@@ -218,8 +219,11 @@ class CheckQuality:
         # Calculates correlation between each beat window and the average beat window --------------------------------
         for beat in self.ecg_windowed:
 
-            r = stats.pearsonr(x=beat, y=self.average_qrs)
-            self.beat_ppmc.append(abs(r[0]))
+            if len(beat) == len(self.average_qrs):
+                r = stats.pearsonr(x=beat, y=self.average_qrs)
+                self.beat_ppmc.append(abs(r[0]))
+            else:
+                self.beat_ppmc.append(0)
 
         self.average_r = float(np.mean(self.beat_ppmc))
         self.average_r = round(self.average_r, 3)
@@ -642,6 +646,7 @@ class RedmondQC:
 
 # ================================================= RUNS CODE =========================================================
 
+"""
 # Imports data
 data = ImportEDF.Bittium(filepath="/Users/kyleweber/Desktop/"
                                   "Student Supervision/Winter 2021/"
@@ -661,6 +666,7 @@ r.epoch_data()
 
 r.plot_processed_data(use_epoch_mask=False)
 # r.plot_results()
+"""
 
 # TODO
 # Figure out Hamming window in high/low frequency masks

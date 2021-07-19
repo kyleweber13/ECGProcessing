@@ -236,9 +236,9 @@ def find_peaks(signal, fs=125, show_plot=True, peak_method="pantompkins1985", cl
     # peaks_clean = [i for i in peaks_clean if abs(i) >= 5]
 
     if show_plot:
-        plt.plot(t, color='black', zorder=0)
-        plt.scatter(peaks["ECG_R_Peaks"], [t[i] for i in peaks["ECG_R_Peaks"]], color='red', marker='x', zorder=1)
-        plt.scatter(peaks_clean, [t[i] for i in peaks_clean], color='limegreen', zorder=2)
+        plt.plot(signal, color='black', zorder=0)
+        plt.scatter(peaks["ECG_R_Peaks"], [signal[i] for i in peaks["ECG_R_Peaks"]], color='red', marker='x', zorder=1)
+        plt.scatter(peaks_clean, [signal[i] for i in peaks_clean], color='limegreen', zorder=2)
 
     return peaks, peaks_clean
 
@@ -256,29 +256,104 @@ def segment_ecg(signal, fs):
     return dict
 
 
-fs = 125
+# Desired sample rate, Hz
+"""
+fs = 250
 
 # Imports data
 data = ImportEDF.Bittium(filepath="/Users/kyleweber/Desktop/FastFixRun1.edf",
-                         start_offset=0, end_offset=0, epoch_len=15, load_accel=False,
+                         start_offset=0, end_offset=0, epoch_len=15, load_accel=True,
                          low_f=1, high_f=25, f_type="bandpass")
 
-ratio = int(data.sample_rate / fs)
-data.filtered = data.filtered[::ratio]
-data.timestamps = data.timestamps[::ratio]
+# Downsampling data
+if fs != data.sample_rate:
+    ratio = int(data.sample_rate / fs)
+    data.filtered = data.filtered[::ratio]
+    data.timestamps = data.timestamps[::ratio]
+"""
 
-d = data.filtered[15000:15000+1250]
-n = data.filtered[56000:56000+1250]
+""" ============================================== ALL-IN-ONE-PROCESSING ========================================== """
+# All-in-one processing
+# Returns df; likely to be slow with any length of data
+# Data: raw ecg, cleaned ecg, inst. HR, ECG quality, P/T/R onset/offsets/peaks, atrial/ventricular phase/completion,
+# df_ecg = nk.ecg_process(ecg_signal=data.raw, sampling_rate=data.sample_rate, method='neurokit')[0]
 
-# Quality check algorithms
-# qcqrs = run_qc(signal=data.filtered, epoch_len=15, fs=fs, algorithm="averageQRS", show_plot=False)
 
-# Removing invalid data based on QC thresholdling
-#t = threshold_averageqrs_data(signal=data.filtered, qc_signal=qc, epoch_len=10, fs=fs, pad_val=0,
-#                              thresh=.95, method='exclusive', plot_data=False)
+def plot_df_ecg_peaks(ds_ratio=3):
 
-# p, pc = find_peaks(signal=t, fs=fs, show_plot=True, peak_method="pantompkins1985", clean_method='neurokit')
+    x = np.arange(0, df_ecg.shape[0])/data.sample_rate
 
-# df_events, info = test_ecg_process_func(signal=data.filtered[15000:15000+1250], start=0, n_samples=int(10*125), fs=fs, plot_builtin=True, plot_events=False)
+    fig, axes = plt.subplots(2, sharex='col', figsize=(10, 6))
 
-# heartbeats = segment_ecg(signal=d, fs=fs)
+    # ECG signal
+    axes[0].plot(x[::ds_ratio], df_ecg["ECG_Raw"].iloc[::ds_ratio], color='red', label='raw', zorder=0)
+    axes[0].plot(x[::ds_ratio], df_ecg["ECG_Clean"].iloc[::ds_ratio], color='black', label='clean', zorder=1)
+
+    df_beat = df_ecg.loc[df_ecg["ECG_R_Peaks"] == 1]
+    axes[0].scatter([i/data.sample_rate for i in df_beat.index], [df_ecg["ECG_Clean"].iloc[i] for i in df_beat.index],
+                    color='limegreen', marker='x', label='R Peak', s=35)
+    axes[0].legend(loc='lower left')
+
+    axes[1].plot(x[::ds_ratio], df_ecg["ECG_Quality"].iloc[::ds_ratio], color='orange')
+    axes[1].set_title("Signal Quality")
+
+
+def plot_df_ecg_cycle(start=0, stop=10):
+
+    df = df_ecg.iloc[int(start*60*data.sample_rate):int(stop*60*data.sample_rate)]
+
+    x = np.linspace(start, stop, df.shape[0])
+
+    fig, axes = plt.subplots(1, sharex='col', figsize=(10, 6))
+
+    axes.plot(x, df["ECG_Clean"], color='black', zorder=0)
+
+    ppeaks = [i - int(start*60*data.sample_rate) for i in df.loc[df["ECG_P_Peaks"] == 1].index]
+    axes.scatter([x[i] for i in ppeaks], [df["ECG_Clean"].iloc[i] for i in ppeaks],
+                 color="red", zorder=1, label="P-peak")
+    rpeaks = [i - int(start*60*data.sample_rate) for i in df.loc[df["ECG_R_Peaks"] == 1].index]
+    axes.scatter([x[i] for i in rpeaks], [df["ECG_Clean"].iloc[i] for i in rpeaks],
+                 color="limegreen", zorder=1, label="R-peak")
+    tpeaks = [i - int(start*60*data.sample_rate) for i in df.loc[df["ECG_T_Peaks"] == 1].index]
+    axes.scatter([x[i] for i in tpeaks], [df["ECG_Clean"].iloc[i] for i in tpeaks],
+                 color="dodgerblue", zorder=1, label="T-peak")
+    axes.legend(loc='lower left')
+
+
+#plot_df_ecg_peaks(ds_ratio=3)
+# plot_df_ecg_cycle(start=5, stop=10)
+
+
+
+# Signal cleaning. Selection of 6 algorithms/filtering methods
+# ["neurokit", "biosppy", "pantompkins1985", "hamilton2002", "elgendi2010", "engzeemod2012"]
+# ecg_clean = nk.ecg_clean(ecg_signal=data.raw, sampling_rate=data.sample_rate, method='neurokit')
+
+
+def nothing():
+    # Quality check algorithms
+    # qcqrs = run_qc(signal=data.filtered, epoch_len=15, fs=fs, algorithm="averageQRS", show_plot=False)
+
+    # Removing invalid data based on QC thresholdling
+    #t = threshold_averageqrs_data(signal=data.filtered, qc_signal=qc, epoch_len=10, fs=fs, pad_val=0,
+    #                              thresh=.95, method='exclusive', plot_data=False)
+
+    p, pc = find_peaks(signal=data.filtered, fs=fs, show_plot=True, peak_method="pantompkins1985", clean_method='neurokit')
+    hrv = nk.hrv_time(peaks=pc, sampling_rate=data.sample_rate, show=False)
+
+    freq = nk.hrv_frequency(peaks=pc, sampling_rate=data.sample_rate, show=True)
+
+
+    # df_events, info = test_ecg_process_func(signal=data.filtered[15000:15000+1250], start=0, n_samples=int(10*125), fs=fs, plot_builtin=True, plot_events=False)
+
+    # heartbeats = segment_ecg(signal=d, fs=fs)
+
+
+    waves, sigs = nk.ecg_delineate(ecg_cleaned=data.filtered, rpeaks=pc, sampling_rate=data.sample_rate, method='dwt', show=False)
+
+    intervals, ecg_rate, ecg_hrv = nk.ecg_intervalrelated()
+
+
+# TODO
+# Organizing
+# Signal quality in organized section --> able to pick which algorithm
